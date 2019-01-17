@@ -1,6 +1,17 @@
 #!/usr/bin/python
 
 ###
+# Date <11.01.2019>
+# New features:
+#       * Gather_Symmetries is now more generalized: it can read any filename 
+#       * Added function Gather_Matrices that gathers full matrices or irrep
+#       * Added function Compute_small_r that makes preparations for unitary 
+#        transform
+#       * Added fucntion Gather_Unitary_Transforms that gathers unitary
+#       transforms that relate two equivalent irreps
+#
+###
+###
 # Date <17.12.2018>
 # New features:
 #        * Added functions Gather_Charachters, Gather_Degeneracies and char_coef
@@ -25,6 +36,7 @@
 
 import numpy as np
 import re as re
+import numpy.linalg as nplin
 
 def Gather_C(path,k_point,details=False):    
     FILE = open (path+'/wfc.{}'.format(k_point),"r")
@@ -239,8 +251,9 @@ class Symmetry:
     def __repr__(self):
         return '{} {}\n'.format(self.matrix,self.operation)
         
-def Gather_Symmetries(path):
-    FILE = open (path+'/index.xml',"r")
+def Gather_Symmetries(path,file_name="index.xml"):
+    full_path=path+"/"+file_name
+    FILE = open (full_path,"r")
     n_sym=0
     inv_sym = False
     sym_list=[]
@@ -250,7 +263,7 @@ def Gather_Symmetries(path):
             if n_sym:
                 n_sym = int(n_sym.group(1))
     for i in range(1,n_sym+1):
-        FILE = open (path+'/index.xml',"r")
+        FILE = open (full_path,"r")
         for line in FILE:
             if '<info.{} name'.format(i) in line:
                 sym_name = re.search('name="(.+?)"',line)
@@ -322,3 +335,87 @@ def Gather_Charachters(k_start,k_stop,symmetry_list,G_R,C_R):
         charachters.append([int(round(char.real)), sym_name])
     print('Done')
     return np.array(charachters)
+
+def Gather_Matrices(k_start,k_stop,symmetry_list,G_R,C_R,k_Rpoint,details=False):
+    Matrices=[]
+    dim_G = 2*abs(max(np.amax(G_R),np.amin(G_R),key=abs))+1
+    if details: print('Dimension of 3x3 square matrix is:', dim_G)
+    M=np.zeros((dim_G,dim_G,dim_G),dtype=int)
+    if details: print('Creating G-matrix')
+    for i in range(len(G_R)):
+        n1,n2,n3 = G_R[i,0],G_R[i,1],G_R[i,2]
+    #    print(n1,n2,n3, i)
+        M[n1,n2,n3] = i
+    if details: print('G-matrix: Done')
+
+    for s in range(len(symmetry_list)):
+        sym_name=symmetry_list[s].operation
+        sym_matrix=symmetry_list[s].matrix
+        if details: print('\nNow performing for '+ sym_name)
+        dim = k_stop-k_start+1
+        full_mat=np.zeros((dim,dim),dtype=complex)
+        for m in range(k_start,k_stop+1):
+            RC_R = np.zeros(len(G_R),dtype=complex)
+            for i in range(len(G_R)):
+                g_i = np.matmul(sym_matrix,G_R[i]+k_Rpoint)-k_Rpoint
+                n1,n2,n3=int(g_i[0]),int(g_i[1]),int(g_i[2])
+                index = M[n1,n2,n3]
+                RC_R[i] = C_R[m,index]
+            for n in range(k_start,k_stop+1):
+                mat_comp=np.vdot(RC_R,C_R[n])
+                full_mat[m-k_start,n-k_start]= (mat_comp)
+        if details: print('Matrix = \n',full_mat,'\nSym. Matrix =\n',sym_matrix)
+        Matrices.append(Symmetry(full_mat,sym_name))
+        #Matrices.append([full_mat, sym_name,np.trace(full_mat)])
+    if details: print('Done')
+    return np.array(Matrices)
+
+def Compute_small_r(sym1,sym2):
+    if len(sym1)!=len(sym2):
+        raise ValueError("Irreps are not compatible")
+    order=len(sym1)
+    dim = int(round(sym1[0].char))
+    inv = int(round(order/2))
+    r = np.zeros((dim,dim),dtype=complex)
+    sq = np.sqrt(dim/order)
+    for i in range(dim):
+        for j in range(dim):
+            s = 0+0j
+            for g in range(order):
+                s1 = 0+0j
+                s1 = sym1[g].matrix[i,i]*nplin.inv(sym2[g].matrix)[j,j]
+                s += s1
+            r[i,j] = np.sqrt(s)
+    return sq*r
+    #else: print("Error: Representations are not of the same order!")
+
+def Gather_Unitary_Transforms(r,sym1,sym2):
+    if len(sym1)!=len(sym2):
+        raise ValueError("Irreps are not compatible")
+    dim = len(r)
+    order=len(sym1)
+    inv = int(round(order/2))
+    great_u = []
+    for m in range(dim):
+        g_u=[]
+        for n in range(dim):
+            g_u.append(0)
+        great_u.append(g_u)
+    factor=dim/order
+    for a in range(dim):
+        for b in range(dim):
+            if abs(r[a,b])>1e-14:
+                small_u = np.zeros((dim,dim),dtype=complex)
+                for i in range(dim):
+                    for j in range(dim):
+                        u_ij=0+0j
+                        for g in range(order):
+                            u1 = nplin.inv(sym1[g].matrix)[i,a]*sym2[g].matrix[b,j]
+                            #u2 = sym1[g+inv].matrix[i,i]*sym2[g].matrix[j,j]
+                            u_ij += u1 #+u2
+                        small_u[i,j]=1/r[a,b] *u_ij
+                great_u[a][b]=np.array(small_u)
+            else: 
+                great_u[a][b]=0
+    #great_u=np.array(great_u)
+    return np.array(great_u)
