@@ -1,5 +1,16 @@
 #!/usr/bin/python
 
+
+
+###
+# Date <05.02.2019>
+# New features:
+#       * Compute_Perturbation that computes 2nd order terms
+#       * Compute_KdP2 that computes second order perturbation in Matrix form
+#          i.e. H_2
+#       * Compute_KdP1 and Compute_H0 have been added to compute fist and zero-th
+#          order matrix forms of Hamiltonian (note that Compute_H gives the same
+#          matrices and eigenvalues as Compute_H0 + Compute_KdP1
 ###
 # Date <11.01.2019>
 # New features:
@@ -110,7 +121,7 @@ def Gather_K(path,details=False):
     KV=np.array(KV)
     return KV
 
-def Gather_E(path,details=False,units='Rydberg'):
+def Gather_E(path,details=False,units='Hartree'):
     FILE = open (path+'/index.xml',"r")
     nbnd=0
     nk=0
@@ -210,7 +221,7 @@ def Compute_Matrix_Element(G_vec,C_terms,m,n):
 
 def Compute_H(k_mesh,k_point,E_k,
               G_space,C_terms,a,
-              units='Rydberg',
+              units='Hartree',
               details=False):
     uni=['Hartree',1.0]
     if units=='Rydberg':
@@ -290,38 +301,45 @@ def char_coef(g_ired,g_red,Nk):
         prod+=g_ired[i]*g_red[i]*Nk[i]
     return prod
 
-def Gather_Degeneracies(E_list):
+def Gather_Degeneracies(E_list,functions=False):
     deg_e=[]
+    deg_u=[]
     index=0
     while index+3<E_list.shape[0]:
         if abs(E_list[index]-E_list[index+1])<1e-4:
             index += 1
             if abs(E_list[index]-E_list[index+1])<1e-4:
                 index += 1
-                deg_e.append([E_list[index],3,'wf: {}-{}'.format(index-2,index)])
+                deg_e.append([E_list[index],3,'index: {}-{}'.format(index-2,index)])
+                deg_u.append([index-2,index-1,index])
             else:
-                deg_e.append([E_list[index],2,'wf: {}-{}'.format(index-1,index)])
+                deg_e.append([E_list[index],2,'index: {}-{}'.format(index-1,index)])
+                deg_u.append([index-1,index])
         else:
-            deg_e.append([E_list[index],1,'wf: {}'.format(index)])
+            deg_e.append([E_list[index],1,'index: {}'.format(index)])
+            deg_u.append([index])
         index +=1
-    return np.array(deg_e)
+    if functions==False:
+        return np.array(deg_e)
+    else:
+        return (deg_u),np.array(deg_e)
 
-def Gather_Charachters(k_start,k_stop,symmetry_list,G_R,C_R):
+def Gather_Charachters(k_start,k_stop,symmetry_list,G_R,C_R,k_Rpoint,details=False):
     charachters=[]
     dim_G = 2*abs(max(np.amax(G_R),np.amin(G_R),key=abs))+1
-    print(dim_G)
+    if details: print('Dimension of 3x3 square matrix is:', dim_G)
     M=np.zeros((dim_G,dim_G,dim_G),dtype=int)
-    print('Creating G-matrix')
+    if details: print('Creating G-matrix')
     for i in range(len(G_R)):
         n1,n2,n3 = G_R[i,0],G_R[i,1],G_R[i,2]
     #    print(n1,n2,n3, i)
         M[n1,n2,n3] = i
-    print('G-matrix: Done')
+    if details: print('G-matrix: Done')
 
     for s in [0, 1, 6, 4, 16, 24, 25, 30, 28, 40]:
         sym_name=symmetry_list[s].operation
         sym_matrix=symmetry_list[s].matrix
-        print('\nNow performing for '+ sym_name)
+        if details: print('\nNow performing for '+ sym_name)
         char=0
         for k in range(k_start,k_stop+1):
             RC_R = np.zeros(len(G_R),dtype=complex)
@@ -331,9 +349,9 @@ def Gather_Charachters(k_start,k_stop,symmetry_list,G_R,C_R):
                 index = M[n1,n2,n3]
                 RC_R[i] = C_R[k,index]
             char += np.vdot(RC_R,C_R[k])
-        print('charachter = ',char)
+        if details: print('charachter = ',char)
         charachters.append([int(round(char.real)), sym_name])
-    print('Done')
+    if details: print('Done')
     return np.array(charachters)
 
 def Gather_Matrices(k_start,k_stop,symmetry_list,G_R,C_R,k_Rpoint,details=False):
@@ -419,3 +437,97 @@ def Gather_Unitary_Transforms(r,sym1,sym2):
                 great_u[a][b]=0
     #great_u=np.array(great_u)
     return np.array(great_u)
+
+def Compute_Perturbation(G_vec,C_terms,ext_basis,E_terms,E_ext,kkr,m,n):
+        new_basis = np.vstack((ext_basis,C_terms))
+        dim = len(ext_basis)
+        cgc = 0
+        Eavg = (E_terms[m]+E_terms[n])/2
+        for l in range(len(E_ext)):
+            delta_E1 =1/(Eavg - E_ext[l])
+            kpi = np.dot(kkr,Compute_Matrix_Element(G_vec,new_basis,dim+m,l))
+            kpj = np.dot(kkr,Compute_Matrix_Element(G_vec,new_basis,l,dim+n))
+            cgc += kpi*kpj*delta_E1
+        return cgc
+    
+def Compute_KdP2(k_mesh,k_point,E_k,E_ext,G_space,C_terms,ext_basis,a,units='Hartree',details=False):
+    uni=['Hartree',1.0]
+    if units=='Rydberg':
+        uni=['Rydberg',2.0]
+    if units=='Electronvolt':
+        uni=['Electronvolt',27.211396132]
+    tpiba = 2*np.pi/a
+    tpiba2=tpiba**2
+    tpiba4=tpiba2**2
+    H=[]
+    H_eig=[]
+    dim = len(C_terms)
+    for k_i in range(len(k_mesh)):
+        k2 = np.dot(k_mesh[k_i],k_mesh[k_i])
+        kkR = k_mesh[k_i]-k_point
+        H_i = np.zeros((dim,dim),dtype=complex)
+        for m in range(len(C_terms)):
+            for n in range(len(C_terms)):
+                KdP2 = Compute_Perturbation_test(G_space,C_terms,ext_basis,E_k,E_ext,kkR,m,n)
+                H_i[m][n] = tpiba4*KdP2
+        H_i_eig = (np.linalg.eigvalsh(H_i))
+        H.append(H_i)
+        H_eig.append(H_i_eig)
+        if details:
+            print("eigenvalues of KdP2_{} in units of {}".format(k_i+1,uni[0]))
+            print((H_i_eig)*uni[1])
+    print('Calculating KdP2: DONE')
+    return np.array(H)*uni[1], np.array(H_eig)*uni[1]
+
+def Compute_KdP1(k_mesh,k_point,G_space,C_terms,a,units='Hartree',details=False):
+    uni=['Hartree',1.0]
+    if units=='Rydberg':
+        uni=['Rydberg',2.0]
+    if units=='Electronvolt':
+        uni=['Electronvolt',27.211396132]
+    tpiba = 2*np.pi/a
+    tpiba2=tpiba**2
+    tpiba4=tpiba2**2
+    H=[]
+    H_eig=[]
+    dim = len(C_terms)
+    for k_i in range(len(k_mesh)):
+        kkR = k_mesh[k_i]-k_point
+        H_i = np.zeros((dim,dim),dtype=complex)
+        for m in range(len(C_terms)):
+            for n in range(len(C_terms)):
+                KdP = Compute_Matrix_Element(G_space,C_terms,m,n)
+                H_i[m][n] = tpiba2*kkR.dot(KdP)
+        H_i_eig = (np.linalg.eigvalsh(H_i))
+        H.append(H_i)
+        H_eig.append(H_i_eig)
+        if details:
+            print("eigenvalues of KdP_{} in units of {}".format(k_i+1,uni[0]))
+            print((H_i_eig)*uni[1])
+    print('Calculating KdP: DONE')
+    return np.array(H)*uni[1], np.array(H_eig)*uni[1]
+
+def Compute_H0(k_mesh,k_point,E_k,a,units='Hartree',details=False):
+    uni=['Hartree',1.0]
+    if units=='Rydberg':
+        uni=['Rydberg',2.0]
+    if units=='Electronvolt':
+        uni=['Electronvolt',27.211396132]
+    tpiba = 2*np.pi/a
+    tpiba2=tpiba**2
+    H=[]
+    H_eig=[]
+    dim = len(E_k)
+    for k_i in range(len(k_mesh)):
+        kkR2 = k_mesh[k_i].dot(k_mesh[k_i])-k_point.dot(k_point)
+        H_i = np.zeros((dim,dim),dtype=complex)
+        for m in range(dim):
+                H_i[m][m] = E_k[m] + 0.5*tpiba2*kkR2
+        H_i_eig = (np.linalg.eigvalsh(H_i))
+        H.append(H_i)
+        H_eig.append(H_i_eig)
+        if details:
+            print("eigenvalues of KdP_{} in units of {}".format(k_i+1,uni[0]))
+            print((H_i_eig)*uni[1])
+    print('Calculating KdP: DONE')
+    return np.array(H)*uni[1], np.array(H_eig)*uni[1]
