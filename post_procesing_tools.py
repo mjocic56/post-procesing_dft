@@ -11,6 +11,7 @@
 #       * Compute_KdP1 and Compute_H0 have been added to compute fist and zero-th
 #          order matrix forms of Hamiltonian (note that Compute_H gives the same
 #          matrices and eigenvalues as Compute_H0 + Compute_KdP1
+#       * Added Compute_Perturbation_mat for members of product in KdP2
 ###
 # Date <11.01.2019>
 # New features:
@@ -121,10 +122,11 @@ def Gather_K(path,details=False):
     KV=np.array(KV)
     return KV
 
-def Gather_E(path,details=False,units='Hartree'):
+def Gather_E(path,details=False,units='Hartree',Fermi_norm=True):
     FILE = open (path+'/index.xml',"r")
     nbnd=0
     nk=0
+    fermi=0
     E=[]
     if details:
         print("Now performing for k-point={}:\n".format(k_point))
@@ -136,12 +138,17 @@ def Gather_E(path,details=False,units='Hartree'):
             found_nbnd = re.search('nbnd="(.+?)"',line)
             if found_nbnd:
                 nbnd = int(found_nbnd.group(1))
+            found_fermi = re.search('efermi="(.+?)"',line)
+            if found_fermi:
+                fermi = float(found_fermi.group(1))            
         for k in range(1,nk+1):
             E_k=[]
             if '<e.{} type='.format(k) in line:
                 for n in range(nbnd):
                     nextLine=next(FILE)
                     e = float(nextLine)
+                    if Fermi_norm:
+                        e = e - fermi
                     E_k.append(e)
                 E.append(E_k)
     if details:
@@ -208,8 +215,8 @@ def Check_Orthonormality(WF, tol=1e-13,details=False):
                         ort_new=True                    
     print('\nOrthonormality {} for tolerance {}'.format(orthonormal,tol))
     if not orthonormal:
-        print('Orthonormal for tolerance {} in index {}\n'.format(tol_global,index))
-
+        print('Orthonormal for tolerance {} in index {}\n'.format(tol_global,index))       
+        
 def Compute_Matrix_Element(G_vec,C_terms,m,n):
     A = np.array(C_terms[m])
     B = np.array(C_terms[n])
@@ -299,7 +306,16 @@ def char_coef(g_ired,g_red,Nk):
     prod=0
     for i in range(len(Nk)):
         prod+=g_ired[i]*g_red[i]*Nk[i]
-    return prod
+    return prod/sum(Nk)
+
+def red_to_irreds(char_red,irred_list,Nk,present='list'):
+    irreds = []
+    for char_g in irred_list:
+        c=char_coef(char_g[0],char_red,Nk)
+        if abs(c)>1e-3:
+            if present=='list': irreds.append([char_g[1],c])
+            if present=='print':print(char_g[1],c)
+    if present=='list': return irreds
 
 def Gather_Degeneracies(E_list,functions=False):
     deg_e=[]
@@ -327,7 +343,7 @@ def Gather_Degeneracies(E_list,functions=False):
 def Gather_Charachters(k_start,k_stop,symmetry_list,G_R,C_R,k_Rpoint,details=False):
     charachters=[]
     dim_G = 2*abs(max(np.amax(G_R),np.amin(G_R),key=abs))+1
-    if details: print('Dimension of 3x3 square matrix is:', dim_G)
+    if details: print('Dimension of 3x3x3 square matrix is:', dim_G)
     M=np.zeros((dim_G,dim_G,dim_G),dtype=int)
     if details: print('Creating G-matrix')
     for i in range(len(G_R)):
@@ -357,7 +373,7 @@ def Gather_Charachters(k_start,k_stop,symmetry_list,G_R,C_R,k_Rpoint,details=Fal
 def Gather_Matrices(k_start,k_stop,symmetry_list,G_R,C_R,k_Rpoint,details=False):
     Matrices=[]
     dim_G = 2*abs(max(np.amax(G_R),np.amin(G_R),key=abs))+1
-    if details: print('Dimension of 3x3 square matrix is:', dim_G)
+    if details: print('Dimension of 3x3x3 square matrix is:', dim_G)
     M=np.zeros((dim_G,dim_G,dim_G),dtype=int)
     if details: print('Creating G-matrix')
     for i in range(len(G_R)):
@@ -388,12 +404,11 @@ def Gather_Matrices(k_start,k_stop,symmetry_list,G_R,C_R,k_Rpoint,details=False)
     if details: print('Done')
     return np.array(Matrices)
 
-def Compute_small_r(sym1,sym2):
-    if len(sym1)!=len(sym2):
+def Compute_small_r(sym_table,sym_wf):
+    if len(sym_table)!=len(sym_wf):
         raise ValueError("Irreps are not compatible")
-    order=len(sym1)
-    dim = int(round(sym1[0].char))
-    inv = int(round(order/2))
+    order=len(sym_table)
+    dim = len(sym_table[0].matrix)
     r = np.zeros((dim,dim),dtype=complex)
     sq = np.sqrt(dim/order)
     for i in range(dim):
@@ -401,18 +416,17 @@ def Compute_small_r(sym1,sym2):
             s = 0+0j
             for g in range(order):
                 s1 = 0+0j
-                s1 = sym1[g].matrix[i,i]*nplin.inv(sym2[g].matrix)[j,j]
+                s1 = sym_table[g].matrix[i,i]*nplin.inv(sym_wf[g].matrix)[j,j]
                 s += s1
             r[i,j] = np.sqrt(s)
     return sq*r
     #else: print("Error: Representations are not of the same order!")
 
-def Gather_Unitary_Transforms(r,sym1,sym2):
-    if len(sym1)!=len(sym2):
+def Gather_Unitary_Transforms(r,sym_table,sym_wf):
+    if len(sym_table)!=len(sym_wf):
         raise ValueError("Irreps are not compatible")
     dim = len(r)
-    order=len(sym1)
-    inv = int(round(order/2))
+    order=len(sym_table)
     great_u = []
     for m in range(dim):
         g_u=[]
@@ -428,15 +442,14 @@ def Gather_Unitary_Transforms(r,sym1,sym2):
                     for j in range(dim):
                         u_ij=0+0j
                         for g in range(order):
-                            u1 = nplin.inv(sym1[g].matrix)[i,a]*sym2[g].matrix[b,j]
-                            #u2 = sym1[g+inv].matrix[i,i]*sym2[g].matrix[j,j]
-                            u_ij += u1 #+u2
-                        small_u[i,j]=1/r[a,b] *u_ij
+                            u1 = nplin.inv(sym_wf[g].matrix)[i,a]*sym_table[g].matrix[b,j]
+                            u_ij += u1
+                        small_u[i,j]=factor/r[a,b] *u_ij
                 great_u[a][b]=np.array(small_u)
             else: 
                 great_u[a][b]=0
-    #great_u=np.array(great_u)
     return np.array(great_u)
+
 
 def Compute_Perturbation(G_vec,C_terms,ext_basis,E_terms,E_ext,kkr,m,n):
         new_basis = np.vstack((ext_basis,C_terms))
@@ -468,7 +481,7 @@ def Compute_KdP2(k_mesh,k_point,E_k,E_ext,G_space,C_terms,ext_basis,a,units='Har
         H_i = np.zeros((dim,dim),dtype=complex)
         for m in range(len(C_terms)):
             for n in range(len(C_terms)):
-                KdP2 = Compute_Perturbation_test(G_space,C_terms,ext_basis,E_k,E_ext,kkR,m,n)
+                KdP2 = Compute_Perturbation(G_space,C_terms,ext_basis,E_k,E_ext,kkR,m,n)
                 H_i[m][n] = tpiba4*KdP2
         H_i_eig = (np.linalg.eigvalsh(H_i))
         H.append(H_i)
@@ -529,5 +542,20 @@ def Compute_H0(k_mesh,k_point,E_k,a,units='Hartree',details=False):
         if details:
             print("eigenvalues of KdP_{} in units of {}".format(k_i+1,uni[0]))
             print((H_i_eig)*uni[1])
-    print('Calculating KdP: DONE')
+    print('Calculating H0: DONE')
     return np.array(H)*uni[1], np.array(H_eig)*uni[1]
+
+def Compute_Perturbation_mat(G_vec,C_terms,ext_basis,E_terms,E_ext,m,n):
+        new_basis = np.vstack((ext_basis,C_terms))
+        dim = len(ext_basis)
+        cgc = 0
+        mat = np.zeros((3,3),dtype=complex)
+        Eavg = (E_terms[m]+E_terms[n])/2
+        for l in range(len(ext_basis)):
+            delta_E1 =1/(Eavg - E_ext[l])
+            kpi = Compute_Matrix_Element(G_vec,new_basis,dim+m,l)
+            kpj = Compute_Matrix_Element(G_vec,new_basis,l,dim+n)
+            for i in range(3):
+                for j in range(3):
+                    mat[i,j] += kpi[i]*kpj[j]*delta_E1
+        return mat
